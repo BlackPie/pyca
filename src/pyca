@@ -1,0 +1,422 @@
+#!/usr/bin/python
+
+import ConfigParser
+import string
+import sys
+import os
+from subprocess import call
+import datetime
+import time
+
+flag = { 'version'       : '',
+         'required_tags' : '',
+         'command'       : '',
+         'expire'        : '' }
+
+flag_cache = { 'version' : '',
+               'state'   : '' }
+
+global_config = {'tags'          : '',
+                'test_dir'       : '',
+                'local_test_dir' : '',
+                'test_excludes'  : '',
+                'test_cache_dir' : '',
+                'report_dir'     : '',
+                'log_file'       : '',
+                'user'           : '' }
+
+
+conf_file='/home/fedotkin/python/pica/data/pica.conf'
+
+single_test_file = 0
+no_cache = 0
+
+report_warning = 0
+report_critical = 0
+total = 0
+total_ok = 0
+loaded_flags = ''
+
+print_report = 0
+test_comments = ''
+
+def save_report(report_dir, total_ok, total, status, comments):
+    report_dir = report_dir + '/report'
+    report_file = open(report_dir, 'w')
+    report_file.write(status + '(' + str(total_ok) + '/' + str(total) + ')\n' + comments)
+    #print('Can not save report')
+
+def load_cache(cache_file):
+    create_temp_file(cache_file)
+  
+    data=ConfigParser.RawConfigParser()
+    data.read('temp_config')
+    try:
+        cache['version'] = data.get('main', 'CACHE_VERSION')
+        cache['status']  = data.get('main', 'CACHE_STATUS')
+    except:
+        print('Broken cache')
+    os.remove('temp_config')
+
+
+def save_cache(cache_dir, test_name, version, status, comment):
+    path_to_the_cache_file = cache_dir + '/' + test_name +'.cache'
+    
+    if not(status == 'OK'):
+        cache_comment = comment
+    else:
+        cache_comment = ''
+    
+    cache_file = open(path_to_the_cache_file, 'w')
+    cache_file.write('[main]' + \
+                     '\nCACHE_VERSION=' + version + \
+                     '\nCACHE_STATUS=' + status + \
+                     '\nCACHE_COMMENT=' + cache_comment) 
+
+
+def read_test_file(test_file):
+    create_temp_file(test_file)  
+
+    data = ConfigParser.RawConfigParser()
+    data.read('temp_config')
+    try:
+        test['version']       = data.get('main', 'PA_VERSION')
+        test['required_tags'] = data.get('main', 'PA_REQUIRED_TAGS')
+        test['command']       = data.get('main', 'PA_COMMAND')
+        test['comment_fail']  = data.get('main', 'PA_COMMENT_FAIL')
+        test['expire']        = data.get('main', 'PA_EXPIRE')
+        test['severity']      = data.get('main', 'PA_SEVERITY')
+    except:
+        print('Some troubles with variables in test file')
+    os.remove('temp_config')
+
+def create_temp_file(addr):
+    with open(addr) as parent_config:
+        lines = parent_config.readlines()
+        lines.insert(0, '[main]\n')
+        with open('temp_config', 'w') as child_config:
+            child_config.write(''.join(lines))
+            child_config.close()
+
+def read_conf_file(addr):
+    
+    create_temp_file(addr) 
+
+    config =ConfigParser.RawConfigParser()
+    config.read('temp_config')
+    try:
+        global_config['local_test_dir'] = config.get('main', 'PICA_LOCAL_TEST_DIR')
+        global_config['test_excludes']  = config.get('main', 'PICA_TEST_EXCLUDES')
+    except:
+        pass
+    try:
+        global_config['tags']           = config.get('main', 'PICA_TAGS')
+        global_config['test_dir']       = config.get('main', 'PICA_TEST_DIR')
+        global_config['test_cache_dir'] = config.get('main', 'PICA_TEST_CACHE_DIR')
+        global_config['report_dir']     = config.get('main', 'PICA_REPORT_DIR')
+        global_config['log_file']       = config.get('main', 'PICA_LOG_FILE')
+        global_config['user']           = config.get('main', 'PICA_USER')
+        global_config['flag_dir']       = config.get('main', 'PICA_FLAG_DIR')
+    except:
+        print 'One or more of required variables not set in config file.'
+        sys.exit(0)
+    os.remove('temp_config')
+
+def read_flag_file(flag_file):
+    create_temp_file(flag_file)  
+
+    data=ConfigParser.RawConfigParser()
+    data.read('temp_config')
+    try:
+        flag['version'] = data.get('main', 'PF_VERSION')
+        flag['command'] = data.get('main', 'PF_COMMAND')
+        flag['expire']  = data.get('main', 'PF_EXPIRE')
+    except:
+        print('Broken flag file. Can not read flag file.')
+        sys.exit(0)
+    flag['required_tags'] = data.get('main', 'PF_REQUIRED_TAGS')
+    os.remove('temp_config')
+
+
+
+
+
+def print_help():
+    print ''' USAGE: pica [-r]
+      -r --report           Print report
+      -v --verbose          Be verbose
+      -t --test <testfile>  Run single test where testfile is full pathname
+      -c --config <file>    Use <file> as a config file
+      -C --no-cache         Ignore cache files
+      -h --help             Print this help '''
+
+def read_flag_cache_file(path_to_the_cache_file):
+    create_temp_file(path_to_the_cache_file)
+  
+    data = ConfigParser.RawConfigParser()
+    data.read('temp_config')
+    try:
+        flag_cache['version'] = data.get('main', 'PF_CACHE_VERSION') 
+        flag_cache['state'] = data.get('main', 'PF_CACHE_STATE')
+    except:
+        print 'Broken cache. Can not read flag file'
+        sys.exit(0)
+    os.remove('temp_config')
+
+def save_pf_cache(path_to_the_cache_file, pf_version, pf_result):
+    cache_file = open(path_to_the_cache_file, 'w')
+    cache_file.write('[main]'+ \
+                     '\nPF_CACHE_VERSION=' + pf_version +\
+                     '\nPF_CACHE_STATE=' + pf_result)
+
+def check_flag(loaded_flags, *flags):
+    recursion_list = list(flags)
+    if (flags[0] == ''):
+        return 1
+    
+    flagname = flags[0] 
+    pf_result = 0
+    flag_file = global_config['flag_dir'] + '/' + flagname + '.pf'
+    flag_file_cache = global_config['test_cache_dir'] + '/' + flagname + '.pf.cache'
+  
+    # check for readability
+    if not (os.access(flag_file, os.R_OK)):
+        print('Flag file ' + flag_file + ' is not readable')
+        return 0
+    
+    read_flag_file(flag_file)
+    
+    a = flag['required_tags']
+    required_tags = a.split(', ') # it can eat strings like "x x x" and "x, x, x"
+
+    for pf_tag in required_tags:
+        if pf_tag in flags:
+            print "infinite loop"
+            exit()
+        recursion_list.append(pf_tag)
+        recursion_list.reverse()          # how add element into top of the list?
+        #print recursion_list
+        check_flag(loaded_flags, *recursion_list)
+        
+
+    loaded_flags += ' ' + flagname 
+    
+    # read cache
+    if (os.access(flag_file_cache, os.R_OK)):
+        read_flag_cache_file(flag_file_cache)
+        # expire check
+        time_of_creating = int(os.path.getctime(flag_file_cache))
+        current_time_hr  = datetime.datetime.now()
+        current_time_sec = int(time.mktime(current_time_hr.timetuple()))
+        if ((current_time_sec - time_of_creating) < int(flag['expire']) and \
+            flag_cache['version'] == flag['version']):
+            pf_result=flag_cache['state']
+            print pf_result              
+
+    # run test, if cache not found
+    if ( pf_result == 0 ):
+        with open(os.devnull, 'w') as nul:
+            if not(call(flag['command'], shell = True, stdout=nul, stderr=nul)):
+                pf_result = 'ON'
+            else:
+                pf_result = 'OFF'
+            save_pf_cache(flag_file_cache, flag['version'], pf_result)
+    
+    
+    if ( pf_result == 'ON' ):
+        global_config['tags'] += ' ' + flagname
+        return 1
+    else:
+        return 0
+    
+
+keys = sys.argv
+keys = keys[1:]
+
+while keys:
+    if (keys[0] == '-r' or keys[0] == '--report'):
+        print_report = 'yes'
+    elif (keys[0] == '-v' or keys[0] == '--verbose'):
+        be_verbose = 'yes'
+    elif (keys[0] == '-h' or keys[0] == '--help'):
+        print_help()
+        exit(0)
+    elif (keys[0] == '-c' or keys[0] == '--config'):
+        try:
+            conf_file = keys[1]
+            keys = keys[1:]
+        except IndexError:
+            print 'pica -c must run with two args'
+            exit(0)
+    elif (keys[0] == '-t' or keys[0] == '--test'):
+        try:
+            single_test_file = keys[1]
+            keys = keys[1:]
+        except IndexError:
+            print 'pica -t must run with two args'
+            exit(0)
+    elif (keys[0] == '-C' or keys[0] == '--no-cache'):
+        no_cache = 'yes'
+    else:
+        print_help()
+        print "unknown option"
+        exit(0)
+    keys = keys[1:]
+
+if not (os.path.exists(conf_file)):
+    print('Conf file is not exist')
+    sys.exit(0)
+
+if not (os.access(conf_file, os.R_OK)):
+    print('Conf file is not readable')
+    sys.exit(0)
+
+read_conf_file(conf_file)
+
+loaded_flags = global_config['tags']
+
+if not (os.path.exists(global_config['test_cache_dir'])):
+    try:
+        os.makedirs(global_config['test_cache_dir'])
+    except:
+        print('Can not create ' + global_config['test_cache_dir'])
+        sys.exit(0)
+
+if not (os.path.exists(global_config['report_dir'])):
+    try:
+        os.makedirs(global_config['report_dir'])
+    except:
+        print('Can not create ' + global_config['report_dir'])
+        sys.exit(0)
+
+if not (os.path.exists(global_config['log_file'])):
+    try:
+        open(global_config['log_file'], 'w')  # just creating pica.log
+    except:
+        print('Can not create log file')
+        sys.exit(0)
+
+if not (os.path.exists(global_config['report_dir'] + '/report')):
+    try:
+        open(global_config['report_dir'] + '/report', 'w')
+    except:
+        print('Can not create report file')
+        sys.exit(0)
+
+if not (os.access(global_config['log_file'], os.W_OK)):
+    print('Log file is not writable')
+    sys.exit(0)
+
+if not (os.access(global_config['report_dir'] + '/report', os.W_OK)):
+    print ('Report file is not writable')
+    sys.exit(0)
+
+if not(os.path.exists(global_config['test_dir'])):
+    print global_config['test_dir']
+    print('Test dir is not exist')
+    sys.exit(0)
+
+if not(os.access(global_config['test_dir'], os.W_OK)):
+    print('Test dir is not readable')
+    sys.exit(0)
+
+if not(os.listdir(global_config['test_dir'])):
+    print('Test dir is empty')
+    sys.exit(0)
+
+if not(os.path.exists(global_config['test_cache_dir'])):
+    print('Cache dir is not exist')
+    sys.exit(0)
+
+if not(os.access(global_config['test_cache_dir'], os.W_OK)):
+    print('Cache dir is not writable')
+    sys.exit(0)
+
+
+  # creating test list
+
+test_list = os.listdir(global_config['test_dir'])
+for test_name in test_list:
+    
+    full_path_to_the_test = os.path.join(global_config['test_dir'], test_name)  
+    if not(os.path.isfile(full_path_to_the_test)):
+        continue
+       
+
+    test = {  'version'      : '',
+              'required_tags': '',
+              'command'      : '',
+              'comment_fail' : '',
+              'expire'       : '',
+              'severity'     : ''  }
+
+    cache = { 'version'      : '',
+              'status'       : '',
+              'comment'      : ''  }
+
+    result = 0
+
+    read_test_file(full_path_to_the_test)
+    
+    # flags in work
+    if (test['required_tags']):
+        required_tags = test['required_tags'].split()
+        for tag in required_tags:
+            if not check_flag(loaded_flags, tag):
+                load_result = 'false'
+                break
+   
+    # cash checking and load
+    if (os.access((global_config['test_cache_dir'] + '/' + test_name + '.cache'), os.R_OK)):
+        load_cache(global_config['test_cache_dir'] + '/' + test_name + '.cache')
+
+        # cash checking (EXPIRE)
+        time_of_creating = int(os.path.getctime(global_config['test_cache_dir'] + '/' + test_name + '.cache'))
+        current_time_hr  = datetime.datetime.now()
+        current_time_sec = int(time.mktime(current_time_hr.timetuple()))
+    
+        if ((current_time_sec - time_of_creating) < int(test['expire']) and \
+        test['version'] == cache['version'] and single_test_file == 0 and no_cache == 0 ):
+            print(test_name + ' ... cached')
+            result=cache['status']
+
+    
+    # runt test, if cash is not found
+    if (result == 0):
+        with open(os.devnull, 'w') as nul:  
+            if not(call(test['command'], shell=True, stdout=nul, stderr=nul)):
+                result = 'OK'
+            else:
+                result=test['severity']
+            print(test_name + ' ... ' + result)
+            save_cache(global_config['test_cache_dir'], test_name, test['version'], result, test['comment_fail'])
+
+    # status creating for report
+    if (result == 'CRITICAL'):
+        report_critical += 1
+        test_comments += ( test_name + ': ' + result + ': ' + test['comment_fail'] + '\n' )
+    elif (result == 'WARNING'):
+        report_warning += 1
+        test_comments += ( test_name + ': ' + result + ': ' + test['comment_fail'] + '\n' )
+    else:
+        total_ok += 1
+
+    total += 1
+# end of the cycle
+
+if ( report_warning == 0 and report_critical == 0 ):
+    report_status = 'OK'
+elif ( report_warning != 0 and report_critical == 0 ):
+    report_status = 'WARNING'
+else:
+    report_status = 'CRITICAL'
+
+save_report(global_config['report_dir'], total_ok, total, report_status, test_comments)
+
+if (print_report):
+    try:
+        call('cat ' + global_config['report_dir'] + '/report')
+    except:
+        print 'Unable to read report file ' + global_config['report_dir']
+        sys.exit(0)
+
