@@ -1,0 +1,7 @@
+PA_VERSION=1.0
+PA_REQUIRED_TAGS=ubuntu
+PA_COMMAND=grep nameserver /etc/resolv.conf
+PA_COMMENT_OK=nameserver found
+PA_COMMENT_FAIL=nameserver is not found
+PA_EXPIRE=7200
+PA_SEVERITY=CRITICAL

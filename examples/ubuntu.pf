@@ -1,0 +1,4 @@
+PF_VERSION=1.0
+PF_REQUIRED_TAGS=
+PF_COMMAND=cat /etc/*release* | grep "Ubuntu"
+PF_EXPIRE=86400
